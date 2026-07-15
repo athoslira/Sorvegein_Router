@@ -1,0 +1,9 @@
+{
+  "id": "sovereign-router",
+  "name": "Sovereign Router",
+  "version": "1.0.0",
+  "minAppVersion": "1.9.0",
+  "description": "A mobile-first BYOK OpenRouter chat with controlled skill routing and FinOps metadata.",
+  "author": "Sovereign Router",
+  "isDesktopOnly": false
+}

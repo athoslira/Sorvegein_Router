@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "tests/compiled",
+    "rootDir": ".",
+    "types": ["node"],
+    "module": "CommonJS",
+    "moduleResolution": "node"
+  },
+  "include": ["src/routing.ts", "src/skill-policy.ts", "src/sse.ts", "src/types.ts", "tests/**/*.ts"]
+}
