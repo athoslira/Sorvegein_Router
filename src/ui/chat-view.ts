@@ -1,13 +1,21 @@
-import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf } from 'obsidian';
+import { ItemView, MarkdownRenderer, Notice, TFile, TFolder, WorkspaceLeaf } from 'obsidian';
+import { buildDocumentContext, limitDocumentContent, type AttachedDocument } from '../document-context';
+import { isSupportedDocument, isTextDocument, needsDoclingConversion } from '../document-files';
+import { convertWithDocling, DoclingError } from '../docling';
+import type SovereignRouterPlugin from '../main';
+import { modelLabel } from '../models';
 import { completeExecutor, OpenRouterError, routeWithGatekeeper, StreamingUnavailableError, streamExecutor } from '../openrouter';
 import { fallbackRoute, selectRoute } from '../routing';
 import { SkillResolver } from '../skills';
-import type SovereignRouterPlugin from '../main';
-import type { ChatMessage, Usage } from '../types';
+import type { ChatMessage, RouteResult, Usage } from '../types';
+import { VaultFolderPicker } from './vault-folder-picker';
 
 export const VIEW_TYPE_SOVEREIGN_ROUTER = 'sovereign-router-chat';
 
-interface AssistantElements { bodyEl: HTMLElement; metaEl: HTMLElement; }
+interface AssistantElements {
+	bodyEl: HTMLElement;
+	metaEl: HTMLElement;
+}
 
 function formatError(error: unknown): string {
 	if (error instanceof OpenRouterError) {
@@ -20,53 +28,236 @@ function formatError(error: unknown): string {
 	if (error instanceof DOMException && error.name === 'AbortError') return 'Response cancelled.';
 	return 'The request could not be completed. Please check your network connection and settings.';
 }
+
 function formatUsage(model: string, usage?: Usage, suffix?: string): string {
-	const parts = [model];
+	const parts = [modelLabel(model)];
 	if (typeof usage?.cost === 'number') parts.push(`$${usage.cost.toFixed(6)}`);
 	if ((usage?.prompt_tokens_details?.cached_tokens ?? 0) > 0) parts.push('cache hit');
 	if (suffix) parts.push(suffix);
-	return parts.join(' · ');
+	return parts.join(' | ');
 }
 
 export class SovereignRouterView extends ItemView {
 	private readonly history: ChatMessage[] = [];
+	private readonly documents: AttachedDocument[] = [];
 	private messagesEl!: HTMLElement;
+	private attachmentsEl!: HTMLElement;
 	private inputEl!: HTMLTextAreaElement;
+	private fileInput!: HTMLInputElement;
+	private modelSelect!: HTMLSelectElement;
+	private attachButton!: HTMLButtonElement;
+	private folderButton!: HTMLButtonElement;
 	private sendButton!: HTMLButtonElement;
 	private cancelButton!: HTMLButtonElement;
 	private abortController: AbortController | null = null;
+	private isConvertingDocument = false;
 
-	constructor(leaf: WorkspaceLeaf, private readonly plugin: SovereignRouterPlugin) { super(leaf); }
-	getViewType(): string { return VIEW_TYPE_SOVEREIGN_ROUTER; }
-	getDisplayText(): string { return 'Sovereign Router'; }
+	constructor(leaf: WorkspaceLeaf, private readonly plugin: SovereignRouterPlugin) {
+		super(leaf);
+	}
+
+	getViewType(): string {
+		return VIEW_TYPE_SOVEREIGN_ROUTER;
+	}
+
+	getDisplayText(): string {
+		return 'Sovereign Router';
+	}
 
 	async onOpen(): Promise<void> {
 		this.containerEl.empty();
 		this.containerEl.addClass('sovereign-router-view');
 		const header = this.containerEl.createDiv({ cls: 'sr-header' });
 		header.createEl('h4', { text: 'Sovereign Router' });
-		header.createSpan({ text: 'BYOK · session only', cls: 'sr-header-note' });
+		const controls = header.createDiv({ cls: 'sr-header-controls' });
+		this.modelSelect = controls.createEl('select', {
+			cls: 'sr-model-select',
+			attr: { 'aria-label': 'Executor model' },
+		});
+		this.modelSelect.createEl('option', { text: 'Auto route', value: '' });
+		for (const model of this.plugin.settings.permittedExecutorModels) {
+			this.modelSelect.createEl('option', { text: modelLabel(model), value: model });
+		}
+		controls.createSpan({ text: 'Session only', cls: 'sr-header-note' });
+
 		this.messagesEl = this.containerEl.createDiv({ cls: 'sr-messages' });
 		const composer = this.containerEl.createDiv({ cls: 'sr-composer' });
-		this.inputEl = composer.createEl('textarea', { cls: 'sr-input', attr: { placeholder: 'Ask anything…', rows: '3', 'aria-label': 'Chat message' } });
+		this.attachmentsEl = composer.createDiv({ cls: 'sr-attachments' });
+		this.fileInput = composer.createEl('input', {
+			cls: 'sr-file-input',
+			attr: {
+				type: 'file',
+				multiple: 'true',
+				accept: '.pdf,.docx,.pptx,.xlsx,.odt,.ods,.odp,.html,.htm,.epub,.txt,.md,.csv,.png,.jpg,.jpeg,.tiff',
+			},
+		});
+		this.inputEl = composer.createEl('textarea', {
+			cls: 'sr-input',
+			attr: { placeholder: 'Ask anything...', rows: '3', 'aria-label': 'Chat message' },
+		});
 		const actions = composer.createDiv({ cls: 'sr-actions' });
+		this.attachButton = actions.createEl('button', { text: 'Attach document', cls: 'sr-button sr-attach' });
+		this.folderButton = actions.createEl('button', { text: 'Attach vault folder', cls: 'sr-button sr-folder' });
 		this.cancelButton = actions.createEl('button', { text: 'Cancel', cls: 'sr-button sr-cancel' });
 		this.sendButton = actions.createEl('button', { text: 'Send', cls: 'sr-button sr-send' });
 		this.setBusy(false);
+
 		this.registerDomEvent(this.inputEl, 'keydown', (event: KeyboardEvent) => {
-			if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void this.sendMessage(); }
+			if (event.key === 'Enter' && !event.shiftKey) {
+				event.preventDefault();
+				void this.sendMessage();
+			}
 		});
 		this.registerDomEvent(this.sendButton, 'click', () => void this.sendMessage());
 		this.registerDomEvent(this.cancelButton, 'click', () => this.abortController?.abort());
+		this.registerDomEvent(this.attachButton, 'click', () => this.fileInput.click());
+		this.registerDomEvent(this.folderButton, 'click', () => this.openFolderPicker());
+		this.registerDomEvent(this.fileInput, 'change', () => {
+			if (this.fileInput.files) void this.attachDocuments(this.fileInput.files);
+		});
 	}
-	async onClose(): Promise<void> { this.abortController?.abort(); }
+
+	private openFolderPicker(): void {
+		if (this.isConvertingDocument || this.abortController) return;
+		new VaultFolderPicker(this.app, (folder) => void this.attachVaultFolder(folder)).open();
+	}
+
+	async onClose(): Promise<void> {
+		this.abortController?.abort();
+	}
+
+	private async attachDocuments(files: FileList): Promise<void> {
+		if (!this.plugin.settings.doclingServiceUrl) {
+			new Notice('Configure a Docling service URL before attaching documents.');
+			this.fileInput.value = '';
+			return;
+		}
+		const secretName = this.plugin.settings.doclingSecretName;
+		const apiKey = secretName ? this.app.secretStorage.getSecret(secretName) : null;
+		if (secretName && !apiKey) {
+			new Notice('The selected Docling API key is unavailable.');
+			this.fileInput.value = '';
+			return;
+		}
+
+		this.isConvertingDocument = true;
+		this.attachButton.setText('Converting...');
+		this.setBusy(Boolean(this.abortController));
+		try {
+			for (const file of Array.from(files)) {
+				try {
+					const markdown = await convertWithDocling(file, this.plugin.settings.doclingServiceUrl, apiKey);
+					const limited = limitDocumentContent(markdown);
+					this.documents.push({ name: file.name, markdown: limited.content, truncated: limited.truncated });
+					new Notice(`${file.name} attached for this chat session.`);
+				} catch (error) {
+					const message = error instanceof DoclingError ? error.message : `Could not convert ${file.name}.`;
+					new Notice(message);
+				}
+			}
+			this.renderAttachments();
+		} finally {
+			this.isConvertingDocument = false;
+			this.attachButton.setText('Attach document');
+			this.fileInput.value = '';
+			this.setBusy(Boolean(this.abortController));
+		}
+	}
+
+	private async attachVaultFolder(folder: TFolder): Promise<void> {
+		const prefix = folder.path ? `${folder.path}/` : '';
+		const candidates = this.app.vault
+			.getFiles()
+			.filter((file) => file.path.startsWith(prefix) && isSupportedDocument(file.name));
+		if (candidates.length === 0) {
+			new Notice('No supported documents were found in this vault folder.');
+			return;
+		}
+
+		const maximumFiles = 25;
+		const availableSlots = Math.max(0, maximumFiles - this.documents.length);
+		if (availableSlots === 0) {
+			new Notice(`You can attach up to ${maximumFiles} documents to a chat session.`);
+			return;
+		}
+		const files = candidates.slice(0, availableSlots);
+		const secretName = this.plugin.settings.doclingSecretName;
+		const doclingKey = secretName ? this.app.secretStorage.getSecret(secretName) : null;
+		const canUseDocling = Boolean(this.plugin.settings.doclingServiceUrl) && (!secretName || Boolean(doclingKey));
+
+		this.isConvertingDocument = true;
+		this.attachButton.setText('Reading...');
+		this.folderButton.setText('Reading...');
+		this.setBusy(false);
+		let attached = 0;
+		let skipped = candidates.length - files.length;
+		try {
+			for (const file of files) {
+				try {
+					const document = await this.readVaultDocument(file, folder.path, doclingKey, canUseDocling);
+					if (!document) {
+						skipped += 1;
+						continue;
+					}
+					this.documents.push(document);
+					attached += 1;
+				} catch (_error) {
+					skipped += 1;
+				}
+			}
+			this.renderAttachments();
+			const summary = [`${attached} file${attached === 1 ? '' : 's'} attached from ${folder.path || 'vault root'}.`];
+			if (skipped) summary.push(`${skipped} skipped.`);
+			if (!canUseDocling && files.some((file) => needsDoclingConversion(file.name))) {
+				summary.push('Configure Docling to include PDFs and Office documents.');
+			}
+			new Notice(summary.join(' '));
+		} finally {
+			this.isConvertingDocument = false;
+			this.attachButton.setText('Attach document');
+			this.folderButton.setText('Attach vault folder');
+			this.setBusy(false);
+		}
+	}
+
+	private async readVaultDocument(
+		file: TFile,
+		folderPath: string,
+		doclingKey: string | null,
+		allowDocling: boolean,
+	): Promise<AttachedDocument | null> {
+		const relativeName = folderPath ? file.path.slice(folderPath.length + 1) : file.path;
+		let content: string;
+		if (isTextDocument(file.name)) {
+			content = await this.app.vault.read(file);
+		} else if (needsDoclingConversion(file.name) && allowDocling) {
+			const binary = await this.app.vault.readBinary(file);
+			content = await convertWithDocling(
+				new File([binary], file.name, { type: 'application/octet-stream' }),
+				this.plugin.settings.doclingServiceUrl,
+				doclingKey,
+			);
+		} else {
+			return null;
+		}
+		const limited = limitDocumentContent(content);
+		return { name: relativeName, markdown: limited.content, truncated: limited.truncated };
+	}
 
 	private async sendMessage(): Promise<void> {
 		const question = this.inputEl.value.trim();
 		if (!question || this.abortController) return;
+		if (this.isConvertingDocument) {
+			new Notice('Wait for document conversion to finish before sending a message.');
+			return;
+		}
 		const secretName = this.plugin.settings.openRouterSecretName;
 		const apiKey = secretName ? this.app.secretStorage.getSecret(secretName) : null;
-		if (!apiKey) { new Notice('Select an OpenRouter API key in Sovereign Router settings first.'); return; }
+		if (!apiKey) {
+			new Notice('Select an OpenRouter API key in Sovereign Router settings first.');
+			return;
+		}
+
 		this.inputEl.value = '';
 		this.appendUser(question);
 		this.history.push({ role: 'user', content: question });
@@ -75,22 +266,34 @@ export class SovereignRouterView extends ItemView {
 		this.setBusy(true);
 		let assistantText = '';
 		try {
-			let route;
-			try { route = selectRoute(await routeWithGatekeeper(question, this.plugin.settings, apiKey), this.plugin.settings); }
-			catch (_error) { route = fallbackRoute(this.plugin.settings, 'Gatekeeper unavailable; using the default model.'); }
-			assistant.metaEl.setText(route.note || `Routing to ${route.model}…`);
+			let route: RouteResult;
+			try {
+				route = selectRoute(await routeWithGatekeeper(question, this.plugin.settings, apiKey), this.plugin.settings);
+			} catch (_error) {
+				route = fallbackRoute(this.plugin.settings, 'Gatekeeper unavailable; using the default model.');
+			}
+			const manualModel = this.modelSelect.value;
+			if (manualModel) {
+				route = { ...route, model: manualModel, note: `Manual model: ${modelLabel(manualModel)}.` };
+			}
+			assistant.metaEl.setText(route.note || `Routing to ${modelLabel(route.model)}...`);
 			const skill = await new SkillResolver(this.app, this.plugin.settings).resolve(route.skill);
 			if (skill.note) assistant.metaEl.setText(`${route.note ? `${route.note} ` : ''}${skill.note}`);
+			const documentContext = buildDocumentContext(this.documents);
 			const callbacks = {
-				onDelta: (text: string) => { assistantText += text; assistant.bodyEl.setText(assistantText); this.scrollToBottom(); },
+				onDelta: (text: string) => {
+					assistantText += text;
+					assistant.bodyEl.setText(assistantText);
+					this.scrollToBottom();
+				},
 				onUsage: (usage: Usage) => assistant.metaEl.setText(formatUsage(route.model, usage)),
 				onModel: (model: string) => assistant.metaEl.setText(formatUsage(model)),
 			};
 			try {
-				await streamExecutor(route.model, this.history, skill.content, apiKey, callbacks, this.abortController.signal);
+				await streamExecutor(route.model, this.history, skill.content, documentContext, apiKey, callbacks, this.abortController.signal);
 			} catch (error) {
 				if (!(error instanceof StreamingUnavailableError) || assistantText) throw error;
-				const fallback = await completeExecutor(route.model, this.history, skill.content, apiKey);
+				const fallback = await completeExecutor(route.model, this.history, skill.content, documentContext, apiKey);
 				assistantText = fallback.content;
 				assistant.metaEl.setText(formatUsage(fallback.model, fallback.usage, 'non-streaming fallback'));
 			}
@@ -99,12 +302,29 @@ export class SovereignRouterView extends ItemView {
 		} catch (error) {
 			const message = formatError(error);
 			assistant.metaEl.setText('Request error');
-			if (assistantText) { assistant.bodyEl.setText(`${assistantText}\n\n_${message}_`); this.history.push({ role: 'assistant', content: assistantText }); }
-			else assistant.bodyEl.setText(message);
+			if (assistantText) {
+				assistant.bodyEl.setText(`${assistantText}\n\n_${message}_`);
+				this.history.push({ role: 'assistant', content: assistantText });
+			} else {
+				assistant.bodyEl.setText(message);
+			}
 		} finally {
 			this.abortController = null;
 			this.setBusy(false);
 			this.scrollToBottom();
+		}
+	}
+
+	private renderAttachments(): void {
+		this.attachmentsEl.empty();
+		for (const [index, document] of this.documents.entries()) {
+			const chip = this.attachmentsEl.createDiv({ cls: 'sr-attachment' });
+			chip.createSpan({ text: document.truncated ? `${document.name} (truncated)` : document.name });
+			const remove = chip.createEl('button', { text: 'Remove', cls: 'sr-attachment-remove' });
+			this.registerDomEvent(remove, 'click', () => {
+				this.documents.splice(index, 1);
+				this.renderAttachments();
+			});
 		}
 	}
 
@@ -113,22 +333,32 @@ export class SovereignRouterView extends ItemView {
 		message.createDiv({ text: content, cls: 'sr-message-body' });
 		this.scrollToBottom();
 	}
+
 	private appendAssistant(): AssistantElements {
 		const messageEl = this.messagesEl.createDiv({ cls: 'sr-message sr-assistant' });
-		const metaEl = messageEl.createDiv({ text: 'Preparing request…', cls: 'sr-message-meta' });
+		const metaEl = messageEl.createDiv({ text: 'Preparing request...', cls: 'sr-message-meta' });
 		const bodyEl = messageEl.createDiv({ cls: 'sr-message-body' });
 		return { metaEl, bodyEl };
 	}
+
 	private async renderMarkdown(element: HTMLElement, content: string): Promise<void> {
 		element.empty();
 		await MarkdownRenderer.renderMarkdown(content, element, '', this);
 	}
-	private setBusy(isBusy: boolean): void {
-		this.sendButton.disabled = isBusy;
-		this.cancelButton.disabled = !isBusy;
-		this.inputEl.disabled = isBusy;
+
+	private setBusy(isRequestBusy: boolean): void {
+		const controlsDisabled = isRequestBusy || this.isConvertingDocument;
+		this.sendButton.disabled = controlsDisabled;
+		this.attachButton.disabled = controlsDisabled;
+		this.folderButton.disabled = controlsDisabled;
+		this.cancelButton.disabled = !isRequestBusy;
+		this.inputEl.disabled = controlsDisabled;
+		this.modelSelect.disabled = controlsDisabled;
 	}
+
 	private scrollToBottom(): void {
-		window.setTimeout(() => { this.messagesEl.scrollTop = this.messagesEl.scrollHeight; }, 0);
+		window.setTimeout(() => {
+			this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+		}, 0);
 	}
 }

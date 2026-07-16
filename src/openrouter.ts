@@ -4,8 +4,6 @@ import type { SovereignRouterSettings } from './settings';
 import { SseParser } from './sse';
 import type { ChatMessage, GatekeeperDecision, Usage } from './types';
 
-export { SseParser } from './sse';
-
 const CHAT_COMPLETIONS_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 export class OpenRouterError extends Error {
@@ -21,8 +19,14 @@ function headers(apiKey: string): Record<string, string> {
 	return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'X-OpenRouter-Title': 'Sovereign Router' };
 }
 function errorMessage(status: number, body: CompletionResponse | undefined): string { return body?.error?.message || `OpenRouter request failed (${status}).`; }
-function executorMessages(messages: ChatMessage[], skillContent: string | null): Array<{ role: string; content: string }> {
-	const system = skillContent ? [{ role: 'system', content: `Follow this skill as additional system guidance:\n\n${skillContent}` }] : [];
+function executorMessages(
+	messages: ChatMessage[],
+	skillContent: string | null,
+	documentContext: string | null,
+): Array<{ role: string; content: string }> {
+	const system: Array<{ role: string; content: string }> = [];
+	if (skillContent) system.push({ role: 'system', content: `Follow this skill as additional system guidance:\n\n${skillContent}` });
+	if (documentContext) system.push({ role: 'system', content: `Use the following attached document context when it is relevant to the user's request.\n\n${documentContext}` });
 	return [...system, ...messages];
 }
 async function requestCompletion(payload: Record<string, unknown>, apiKey: string): Promise<CompletionResponse> {
@@ -50,10 +54,18 @@ function handleSseEvent(event: string, callbacks: StreamCallbacks): void {
 	if (content) callbacks.onDelta(content);
 }
 
-export async function streamExecutor(model: string, messages: ChatMessage[], skillContent: string | null, apiKey: string, callbacks: StreamCallbacks, signal: AbortSignal): Promise<void> {
+export async function streamExecutor(
+	model: string,
+	messages: ChatMessage[],
+	skillContent: string | null,
+	documentContext: string | null,
+	apiKey: string,
+	callbacks: StreamCallbacks,
+	signal: AbortSignal,
+): Promise<void> {
 	let response: Response;
 	try {
-		response = await fetch(CHAT_COMPLETIONS_URL, { method: 'POST', headers: headers(apiKey), body: JSON.stringify({ model, messages: executorMessages(messages, skillContent), stream: true }), signal });
+		response = await fetch(CHAT_COMPLETIONS_URL, { method: 'POST', headers: headers(apiKey), body: JSON.stringify({ model, messages: executorMessages(messages, skillContent, documentContext), stream: true }), signal });
 	} catch (error) {
 		if (error instanceof DOMException && error.name === 'AbortError') throw error;
 		throw new StreamingUnavailableError('Streaming is not available in this environment.');
@@ -76,7 +88,13 @@ export async function streamExecutor(model: string, messages: ChatMessage[], ski
 	for (const event of parser.finish()) handleSseEvent(event, callbacks);
 }
 
-export async function completeExecutor(model: string, messages: ChatMessage[], skillContent: string | null, apiKey: string): Promise<{ content: string; usage?: Usage; model: string }> {
-	const response = await requestCompletion({ model, messages: executorMessages(messages, skillContent), stream: false }, apiKey);
+export async function completeExecutor(
+	model: string,
+	messages: ChatMessage[],
+	skillContent: string | null,
+	documentContext: string | null,
+	apiKey: string,
+): Promise<{ content: string; usage?: Usage; model: string }> {
+	const response = await requestCompletion({ model, messages: executorMessages(messages, skillContent, documentContext), stream: false }, apiKey);
 	return { content: response.choices?.[0]?.message?.content || '', usage: response.usage, model: response.model || model };
 }

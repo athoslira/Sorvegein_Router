@@ -31,7 +31,7 @@ export class SkillResolver {
 		try {
 			const response = await requestUrl({ url, method: 'GET' });
 			return { content: response.text, note: null };
-		} catch (_error) {
+		} catch {
 			return { content: null, note: 'The selected remote skill could not be downloaded.' };
 		}
 	}

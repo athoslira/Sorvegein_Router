@@ -1,4 +1,5 @@
 import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
+import { DEFAULT_EXECUTOR_MODELS } from './models';
 import { DEFAULT_SETTINGS, SovereignRouterSettingTab, SovereignRouterSettings } from './settings';
 import { SovereignRouterView, VIEW_TYPE_SOVEREIGN_ROUTER } from './ui/chat-view';
 
@@ -29,11 +30,19 @@ export default class SovereignRouterPlugin extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
+		const savedSettings = (await this.loadData()) as Partial<SovereignRouterSettings>;
 		this.settings = Object.assign(
 			{},
 			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<SovereignRouterSettings>,
+			savedSettings,
 		);
+		if (savedSettings.modelCatalogVersion === undefined) {
+			this.settings.permittedExecutorModels = Array.from(
+				new Set([...DEFAULT_EXECUTOR_MODELS, ...(savedSettings.permittedExecutorModels ?? [])]),
+			);
+			this.settings.modelCatalogVersion = 1;
+			await this.saveSettings();
+		}
 	}
 
 	async saveSettings(): Promise<void> {
