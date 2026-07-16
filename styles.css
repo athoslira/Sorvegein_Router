@@ -12,13 +12,13 @@
 .sr-user .sr-message-body { margin-left: auto; padding: 8px 10px; width: fit-content; max-width: 90%; border-radius: 8px; background: var(--interactive-accent); color: var(--text-on-accent); }
 .sr-assistant .sr-message-body { padding: 6px 0; }
 .sr-message-meta { min-height: 1.1em; }
-.sr-composer { border-top: 1px solid var(--background-modifier-border); }
+.sr-composer { display: flex; flex-direction: column; border-top: 1px solid var(--background-modifier-border); }
 .sr-file-input { display: none; }
 .sr-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .sr-attachment { display: flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 6px; border-radius: 6px; background: var(--background-secondary); font-size: var(--font-ui-smaller); overflow-wrap: anywhere; }
 .sr-attachment-remove { padding: 1px 5px; font-size: var(--font-ui-smaller); }
-.sr-input { width: 100%; resize: vertical; box-sizing: border-box; }
-.sr-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.sr-input { order: 2; width: 100%; resize: vertical; box-sizing: border-box; }
+.sr-actions { display: flex; order: 1; flex-wrap: wrap; justify-content: flex-start; gap: 8px; margin: 0 0 8px; }
 .sr-button { min-width: 72px; }
 .sr-tool-arguments { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 450px) { .sr-header, .sr-composer, .sr-messages { padding: 10px; } .sr-user .sr-message-body { max-width: 96%; } }
