@@ -66,6 +66,11 @@ export class SovereignRouterSettingTab extends PluginSettingTab {
 			});
 			return secretComponent;
 		});
+		containerEl.createEl('h3', { text: 'Automatic vault context' });
+		containerEl.createEl('p', { text: 'The current vault is indexed locally after Obsidian loads. The Gatekeeper can request relevant context after routing; only those excerpts are sent to OpenRouter. Documents attached through Docling are added to the local context library automatically.' });
+		new Setting(containerEl).setName('Clear stored external documents').setDesc('Deletes only the converted document cache. Vault files remain in the local index and are always read from their current vault version.').addButton((button) => button.setWarning().setButtonText('Clear cache').onClick(async () => {
+			await this.plugin.contextIndex.clearExternalDocuments();
+		}));
 		containerEl.createEl('h3', { text: 'MCP connections' });
 		containerEl.createEl('p', { text: 'Connect remote MCP servers over Streamable HTTP. Read-only tools can be used in chat. Write tools stay disabled until you explicitly enable them and confirm each call.' });
 		new Setting(containerEl).setName('Add MCP connection').setDesc('Use HTTPS. HTTP is accepted only for localhost.').addButton((button) => button.setButtonText('Add connection').onClick(async () => {

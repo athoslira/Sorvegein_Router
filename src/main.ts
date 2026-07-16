@@ -2,12 +2,22 @@ import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
 import { DEFAULT_EXECUTOR_MODELS } from './models';
 import { DEFAULT_SETTINGS, SovereignRouterSettingTab, SovereignRouterSettings } from './settings';
 import { SovereignRouterView, VIEW_TYPE_SOVEREIGN_ROUTER } from './ui/chat-view';
+import { VaultContextIndex } from './vault-context-index';
 
 export default class SovereignRouterPlugin extends Plugin {
 	settings!: SovereignRouterSettings;
+	contextIndex!: VaultContextIndex;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		this.contextIndex = new VaultContextIndex(this.app, this.manifest);
+		this.app.workspace.onLayoutReady(() => {
+			void this.contextIndex.start();
+			this.registerEvent(this.app.vault.on('create', (file) => this.contextIndex.onVaultFileChanged(file)));
+			this.registerEvent(this.app.vault.on('modify', (file) => this.contextIndex.onVaultFileChanged(file)));
+			this.registerEvent(this.app.vault.on('delete', (file) => this.contextIndex.onVaultFileDeleted(file)));
+			this.registerEvent(this.app.vault.on('rename', (file, oldPath) => this.contextIndex.onVaultFileRenamed(file, oldPath)));
+		});
 
 		this.registerView(
 			VIEW_TYPE_SOVEREIGN_ROUTER,
@@ -26,6 +36,7 @@ export default class SovereignRouterPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		this.contextIndex.dispose();
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_SOVEREIGN_ROUTER);
 	}
 

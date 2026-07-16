@@ -1,6 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { buildDocumentContext, limitDocumentContent, MAX_DOCUMENT_CHARS } from '../src/document-context';
 import { isSupportedDocument, isTextDocument, needsDoclingConversion } from '../src/document-files';
+import { contextTerms, extractContextExcerpt, rankContextEntries } from '../src/context-search';
 import { DEFAULT_EXECUTOR_MODELS, modelLabel } from '../src/models';
 import { parseMcpToolCalls, toExecutorTools } from '../src/mcp-tools';
 import { canCallMcpTool, isAllowedMcpEndpoint } from '../src/mcp-policy';
@@ -28,11 +29,12 @@ function run(name: string, check: () => void): void {
 	console.log(`✓ ${name}`);
 }
 
-run('validates permitted routes and fallback routes', () => {
-	const valid = parseGatekeeperDecision({ model: settings.defaultExecutorModel, skill: { source: 'local', path: 'coding.md' } });
+run('validates permitted routes, context decisions, and fallback routes', () => {
+	const valid = parseGatekeeperDecision({ model: settings.defaultExecutorModel, skill: { source: 'local', path: 'coding.md' }, context: { source: 'vault', query: 'project roadmap' } });
 	assert.equal(selectRoute(valid, settings).note, null);
+	assert.equal(selectRoute(valid, settings).context?.query, 'project roadmap');
 	assert.equal(parseGatekeeperDecision({ model: 'invalid' }), null);
-	const unpermitted = parseGatekeeperDecision({ model: 'untrusted/model', skill: null });
+	const unpermitted = parseGatekeeperDecision({ model: 'untrusted/model', skill: null, context: null });
 	assert.equal(selectRoute(unpermitted, settings).model, settings.defaultExecutorModel);
 });
 
@@ -70,6 +72,18 @@ run('classifies vault files for local reading or Docling conversion', () => {
 	assert.equal(needsDoclingConversion('report.pdf'), true);
 	assert.equal(isSupportedDocument('slides.pptx'), true);
 	assert.equal(isSupportedDocument('archive.zip'), false);
+});
+
+run('indexes and retrieves focused local context without retaining raw vault text', () => {
+	const terms = contextTerms('Projeto Héstia possui roteiro, roteiro e orçamento.');
+	assert.equal(terms.includes('roteiro'), true);
+	const ranked = rankContextEntries([
+		{ id: '1', path: 'Projects/Hestia.md', title: 'Projeto Héstia', terms: ['projeto', 'roteiro', 'orcamento'] },
+		{ id: '2', path: 'Notes/Recipes.md', title: 'Recipes', terms: ['food', 'kitchen'] },
+	], 'roteiro do projeto');
+	assert.equal(ranked[0]?.id, '1');
+	const excerpt = extractContextExcerpt(`${'x'.repeat(15_000)} roteiro prioritário`, 'roteiro', 100);
+	assert.match(excerpt, /roteiro prioritário/);
 });
 
 run('restricts MCP endpoints and requires confirmation for enabled write tools', () => {

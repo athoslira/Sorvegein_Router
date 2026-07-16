@@ -160,6 +160,11 @@ export class SovereignRouterView extends ItemView {
 					const markdown = await convertWithDocling(file, this.plugin.settings.doclingServiceUrl, apiKey);
 					const limited = limitDocumentContent(markdown);
 					this.documents.push({ name: file.name, markdown: limited.content, truncated: limited.truncated });
+					try {
+						await this.plugin.contextIndex.addExternalDocument(file.name, limited.content);
+					} catch (_error) {
+						new Notice(`${file.name} is attached for this session, but could not be added to local context.`);
+					}
 					new Notice(`${file.name} attached for this chat session.`);
 				} catch (error) {
 					const message = error instanceof DoclingError ? error.message : `Could not convert ${file.name}.`;
@@ -290,7 +295,18 @@ export class SovereignRouterView extends ItemView {
 			assistant.metaEl.setText(route.note || `Routing to ${modelLabel(route.model)}...`);
 			const skill = await new SkillResolver(this.app, this.plugin.settings).resolve(route.skill);
 			if (skill.note) assistant.metaEl.setText(`${route.note ? `${route.note} ` : ''}${skill.note}`);
-			const documentContext = buildDocumentContext(this.documents);
+			const attachedContext = buildDocumentContext(this.documents);
+			let vaultContext: string | null = null;
+			if (route.context) {
+				try {
+					const resolved = await this.plugin.contextIndex.resolve(route.context.query);
+					vaultContext = resolved.content;
+					if (resolved.note) assistant.metaEl.setText(resolved.note);
+				} catch (_error) {
+					assistant.metaEl.setText('Local context is unavailable; continuing without it.');
+				}
+			}
+			const documentContext = [attachedContext, vaultContext].filter((value): value is string => Boolean(value)).join('\n\n---\n\n') || null;
 			const catalog = this.mcpToggle.checked ? await this.loadMcpCatalog() : null;
 			const executorTools = catalog ? toExecutorTools(catalog.tools) : [];
 			if (catalog?.warnings.length) new Notice(catalog.warnings.join(' '));

@@ -22,9 +22,17 @@ Docling is a Python project, so it is not bundled into this TypeScript/mobile pl
 1. Start a Docling service, for example `docling-serve run`, and make its URL reachable from the device running Obsidian. The default local endpoint is `http://localhost:5001`.
 2. In **Settings → Sovereign Router**, set the **Docling service URL**. If the service requires authentication, select its API key through SecretStorage.
 3. Use **Attach document** to select files from the device, or **Attach vault folder** to select a folder from the current vault. Folder import walks supported files recursively: text and Markdown files are read through the Vault API, while PDFs and Office documents use Docling.
-4. Converted content is available only in that open chat session and can be removed before sending a message.
+4. Converted content is available in the open chat session and is also added to the local context library so it can be retrieved automatically in future relevant chats.
 
-The plugin supports the file formats accepted by the picker, imports at most 25 documents from a selected folder, limits individual uploads to 20 MB, and limits injected Markdown to protect context and cost. It does not save source files or converted output. For mobile devices, `localhost` means the phone/tablet itself; use a reachable HTTPS service or a local service on that device.
+The plugin supports the file formats accepted by the picker, imports at most 25 documents from a selected folder, limits individual uploads to 20 MB, and limits injected Markdown to protect context and cost. Source files are not copied, but converted Markdown from directly attached external documents is kept in the plugin's local context cache. For mobile devices, `localhost` means the phone/tablet itself; use a reachable HTTPS service or a local service on that device.
+
+## Automatic vault context
+
+After Obsidian finishes loading, the plugin creates and incrementally maintains a local context index for supported text files in the current vault. The central registry is stored under the plugin's `context/` folder and is ignored by Git. It contains paths, modification markers, headings, and local search terms—not a second copy of vault text.
+
+When the Gatekeeper identifies that a request needs vault information, it returns a focused retrieval query. Only then does the plugin reread the most relevant current files, extracts bounded excerpts, and sends those excerpts to the executor. If the index is unavailable, stale, or finds no match, the executor falls back to answering without vault context.
+
+External documents attached through Docling are cached as converted Markdown in that same local context library. Use **Settings → Sovereign Router → Clear stored external documents** to remove that cache. Existing PDFs and Office documents already in the vault are not converted automatically; attach them through Docling when needed.
 
 ## MCP tools
 
@@ -40,7 +48,7 @@ Sovereign Router can call tools from remote MCP servers through Streamable HTTP.
 - The plugin sends chat messages and selected skill content to OpenRouter when you submit a request.
 - Attached files are sent only to the Docling service URL you configure; their converted Markdown is then sent to OpenRouter with the chat request.
 - API keys are selected through Obsidian SecretStorage. `data.json` stores only their references.
-- Conversations and document context remain only in the open chat panel. The plugin collects no telemetry, edits no notes, and executes no remote code.
+- Conversations remain only in the open chat panel. The local context index persists file references and search terms; converted external attachments persist only in the local plugin cache until you clear them. The plugin collects no telemetry, edits no notes, and executes no remote code.
 - Remote skills are fetched as Markdown only from GitHub repositories you explicitly allow. They are never executed or saved to the vault.
 - MCP servers receive only the arguments of a tool call that you enabled in the chat. Their tools can be selected by OpenRouter only after their schemas have been loaded for that request.
 
