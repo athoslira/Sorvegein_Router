@@ -2,12 +2,17 @@ import { ItemView, MarkdownRenderer, Notice, TFile, TFolder, WorkspaceLeaf } fro
 import { buildDocumentContext, limitDocumentContent, type AttachedDocument } from '../document-context';
 import { isSupportedDocument, isTextDocument, needsDoclingConversion } from '../document-files';
 import { convertWithDocling, DoclingError } from '../docling';
+import type { McpClient } from '../mcp-client';
+import { loadMcpCatalog, parseMcpToolCalls, toExecutorTools, type McpCatalog } from '../mcp-tools';
+import { canCallMcpTool } from '../mcp-policy';
+import type { McpToolCall } from '../mcp-types';
 import type SovereignRouterPlugin from '../main';
 import { modelLabel } from '../models';
 import { completeExecutor, OpenRouterError, routeWithGatekeeper, StreamingUnavailableError, streamExecutor } from '../openrouter';
 import { fallbackRoute, selectRoute } from '../routing';
 import { SkillResolver } from '../skills';
-import type { ChatMessage, RouteResult, Usage } from '../types';
+import type { ChatMessage, OpenRouterToolCall, RouteResult, Usage } from '../types';
+import { confirmMcpToolCall } from './tool-confirmation-modal';
 import { VaultFolderPicker } from './vault-folder-picker';
 
 export const VIEW_TYPE_SOVEREIGN_ROUTER = 'sovereign-router-chat';
@@ -45,12 +50,14 @@ export class SovereignRouterView extends ItemView {
 	private inputEl!: HTMLTextAreaElement;
 	private fileInput!: HTMLInputElement;
 	private modelSelect!: HTMLSelectElement;
+	private mcpToggle!: HTMLInputElement;
 	private attachButton!: HTMLButtonElement;
 	private folderButton!: HTMLButtonElement;
 	private sendButton!: HTMLButtonElement;
 	private cancelButton!: HTMLButtonElement;
 	private abortController: AbortController | null = null;
 	private isConvertingDocument = false;
+	private mcpClients = new Map<string, McpClient>();
 
 	constructor(leaf: WorkspaceLeaf, private readonly plugin: SovereignRouterPlugin) {
 		super(leaf);
@@ -78,6 +85,9 @@ export class SovereignRouterView extends ItemView {
 		for (const model of this.plugin.settings.permittedExecutorModels) {
 			this.modelSelect.createEl('option', { text: modelLabel(model), value: model });
 		}
+		const mcpControl = controls.createEl('label', { cls: 'sr-mcp-toggle' });
+		this.mcpToggle = mcpControl.createEl('input', { attr: { type: 'checkbox', 'aria-label': 'Use MCP tools' } });
+		mcpControl.createSpan({ text: 'MCP' });
 		controls.createSpan({ text: 'Session only', cls: 'sr-header-note' });
 
 		this.messagesEl = this.containerEl.createDiv({ cls: 'sr-messages' });
@@ -124,6 +134,7 @@ export class SovereignRouterView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.abortController?.abort();
+		await this.closeMcpClients();
 	}
 
 	private async attachDocuments(files: FileList): Promise<void> {
@@ -280,6 +291,10 @@ export class SovereignRouterView extends ItemView {
 			const skill = await new SkillResolver(this.app, this.plugin.settings).resolve(route.skill);
 			if (skill.note) assistant.metaEl.setText(`${route.note ? `${route.note} ` : ''}${skill.note}`);
 			const documentContext = buildDocumentContext(this.documents);
+			const catalog = this.mcpToggle.checked ? await this.loadMcpCatalog() : null;
+			const executorTools = catalog ? toExecutorTools(catalog.tools) : [];
+			if (catalog?.warnings.length) new Notice(catalog.warnings.join(' '));
+			if (this.mcpToggle.checked && executorTools.length === 0) assistant.metaEl.setText('No MCP tools available; answering without them.');
 			const callbacks = {
 				onDelta: (text: string) => {
 					assistantText += text;
@@ -289,15 +304,7 @@ export class SovereignRouterView extends ItemView {
 				onUsage: (usage: Usage) => assistant.metaEl.setText(formatUsage(route.model, usage)),
 				onModel: (model: string) => assistant.metaEl.setText(formatUsage(model)),
 			};
-			try {
-				await streamExecutor(route.model, this.history, skill.content, documentContext, apiKey, callbacks, this.abortController.signal);
-			} catch (error) {
-				if (!(error instanceof StreamingUnavailableError) || assistantText) throw error;
-				const fallback = await completeExecutor(route.model, this.history, skill.content, documentContext, apiKey);
-				assistantText = fallback.content;
-				assistant.metaEl.setText(formatUsage(fallback.model, fallback.usage, 'non-streaming fallback'));
-			}
-			this.history.push({ role: 'assistant', content: assistantText });
+			await this.runExecutorWithMcp(route.model, skill.content, documentContext, apiKey, callbacks, assistant, catalog, executorTools, (text) => { assistantText = text; }, () => assistantText, () => { assistantText = ''; });
 			await this.renderMarkdown(assistant.bodyEl, assistantText);
 		} catch (error) {
 			const message = formatError(error);
@@ -312,6 +319,87 @@ export class SovereignRouterView extends ItemView {
 			this.abortController = null;
 			this.setBusy(false);
 			this.scrollToBottom();
+		}
+	}
+
+	private async loadMcpCatalog(): Promise<McpCatalog> {
+		await this.closeMcpClients();
+		const catalog = await loadMcpCatalog(this.plugin.settings.mcpServers, (secretName) => this.app.secretStorage.getSecret(secretName));
+		this.mcpClients = catalog.clients;
+		return catalog;
+	}
+
+	private async closeMcpClients(): Promise<void> {
+		const clients = [...this.mcpClients.values()];
+		this.mcpClients.clear();
+		await Promise.all(clients.map((client) => client.close()));
+	}
+
+	private async runExecutorWithMcp(
+		model: string,
+		skillContent: string | null,
+		documentContext: string | null,
+		apiKey: string,
+		callbacks: { onDelta: (text: string) => void; onUsage: (usage: Usage) => void; onModel: (model: string) => void },
+		assistant: AssistantElements,
+		catalog: McpCatalog | null,
+		executorTools: ReturnType<typeof toExecutorTools>,
+		setText: (text: string) => void,
+		getText: () => string,
+		clearText: () => void,
+	): Promise<void> {
+		for (let round = 0; round < 3; round += 1) {
+			let toolCalls: OpenRouterToolCall[];
+			try {
+				toolCalls = await streamExecutor(model, this.history, skillContent, documentContext, apiKey, callbacks, this.abortController?.signal as AbortSignal, executorTools);
+			} catch (error) {
+				if (!(error instanceof StreamingUnavailableError) || getText()) throw error;
+				const fallback = await completeExecutor(model, this.history, skillContent, documentContext, apiKey, executorTools);
+				setText(fallback.content);
+				toolCalls = fallback.toolCalls;
+				assistant.metaEl.setText(formatUsage(fallback.model, fallback.usage, 'non-streaming fallback'));
+			}
+			if (toolCalls.length === 0) {
+				this.history.push({ role: 'assistant', content: getText() });
+				return;
+			}
+			if (!catalog) throw new Error('The model requested MCP tools while MCP is disabled.');
+			this.history.push({ role: 'assistant', content: getText() || null, tool_calls: toolCalls });
+			assistant.metaEl.setText('Using connected MCP tools...');
+			await this.executeMcpToolCalls(toolCalls, catalog);
+			if (round === 2) {
+				setText('The MCP tool-call limit was reached. Please narrow the request and try again.');
+				this.history.push({ role: 'assistant', content: getText() });
+				return;
+			}
+			clearText();
+			assistant.bodyEl.empty();
+		}
+	}
+
+	private async executeMcpToolCalls(toolCalls: OpenRouterToolCall[], catalog: McpCatalog): Promise<void> {
+		const parsed = parseMcpToolCalls(toolCalls, catalog.tools);
+		for (const call of parsed) {
+			if ('error' in call) {
+				this.history.push({ role: 'tool', content: call.error, tool_call_id: call.id });
+				continue;
+			}
+			this.history.push({ role: 'tool', content: await this.executeMcpToolCall(call, catalog), tool_call_id: call.callId });
+		}
+	}
+
+	private async executeMcpToolCall(call: McpToolCall, catalog: McpCatalog): Promise<string> {
+		const server = this.plugin.settings.mcpServers.find((item) => item.id === call.tool.serverId);
+		if (!server) return 'The requested MCP connection no longer exists.';
+		const policy = canCallMcpTool(call.tool, server);
+		if (!policy.allowed) return policy.reason || 'This MCP tool is not allowed.';
+		if (policy.requiresConfirmation && !(await confirmMcpToolCall(this.app, call))) return 'The user declined this MCP action.';
+		const client = catalog.clients.get(server.id);
+		if (!client) return 'The MCP connection is unavailable.';
+		try {
+			return await client.callTool(call.tool.name, call.arguments, this.abortController?.signal);
+		} catch (error) {
+			return error instanceof Error ? `MCP tool error: ${error.message}` : 'MCP tool failed.';
 		}
 	}
 
@@ -354,6 +442,7 @@ export class SovereignRouterView extends ItemView {
 		this.cancelButton.disabled = !isRequestBusy;
 		this.inputEl.disabled = controlsDisabled;
 		this.modelSelect.disabled = controlsDisabled;
+		this.mcpToggle.disabled = controlsDisabled;
 	}
 
 	private scrollToBottom(): void {

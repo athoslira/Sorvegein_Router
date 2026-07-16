@@ -2,7 +2,7 @@ import { requestUrl } from 'obsidian';
 import { parseGatekeeperDecision, routingSystemPrompt } from './routing';
 import type { SovereignRouterSettings } from './settings';
 import { SseParser } from './sse';
-import type { ChatMessage, GatekeeperDecision, Usage } from './types';
+import type { ChatMessage, GatekeeperDecision, OpenRouterToolCall, Usage } from './types';
 
 const CHAT_COMPLETIONS_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -11,9 +11,13 @@ export class OpenRouterError extends Error {
 }
 export class StreamingUnavailableError extends Error {}
 
-interface CompletionChoice { message?: { content?: string | null }; delta?: { content?: string | null }; }
+interface ToolCallDelta { index?: number; id?: string; type?: 'function'; function?: { name?: string; arguments?: string }; }
+interface CompletionMessage { content?: string | null; tool_calls?: OpenRouterToolCall[]; }
+interface CompletionChoice { message?: CompletionMessage; delta?: CompletionMessage & { tool_calls?: ToolCallDelta[] }; }
 interface CompletionResponse { model?: string; choices?: CompletionChoice[]; usage?: Usage; error?: { message?: string }; }
 export interface StreamCallbacks { onDelta: (text: string) => void; onUsage: (usage: Usage) => void; onModel: (model: string) => void; }
+export interface ExecutorTool { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> }; }
+export interface CompletionResult { content: string; usage?: Usage; model: string; toolCalls: OpenRouterToolCall[]; }
 
 function headers(apiKey: string): Record<string, string> {
 	return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'X-OpenRouter-Title': 'Sovereign Router' };
@@ -27,7 +31,7 @@ function executorMessages(
 	const system: Array<{ role: string; content: string }> = [];
 	if (skillContent) system.push({ role: 'system', content: `Follow this skill as additional system guidance:\n\n${skillContent}` });
 	if (documentContext) system.push({ role: 'system', content: `Use the following attached document context when it is relevant to the user's request.\n\n${documentContext}` });
-	return [...system, ...messages];
+	return [...system, ...messages] as Array<{ role: string; content: string }>;
 }
 async function requestCompletion(payload: Record<string, unknown>, apiKey: string): Promise<CompletionResponse> {
 	const response = await requestUrl({ url: CHAT_COMPLETIONS_URL, method: 'POST', headers: headers(apiKey), body: JSON.stringify(payload), throw: false });
@@ -43,15 +47,29 @@ export async function routeWithGatekeeper(question: string, settings: SovereignR
 	try { return parseGatekeeperDecision(JSON.parse(content)); } catch (_error) { return null; }
 }
 
-function handleSseEvent(event: string, callbacks: StreamCallbacks): void {
+function handleSseEvent(event: string, callbacks: StreamCallbacks, toolCalls: OpenRouterToolCall[]): void {
 	if (event === '[DONE]') return;
 	let payload: CompletionResponse;
 	try { payload = JSON.parse(event) as CompletionResponse; } catch (_error) { return; }
 	if (payload.error?.message) throw new OpenRouterError(payload.error.message);
 	if (payload.model) callbacks.onModel(payload.model);
 	if (payload.usage) callbacks.onUsage(payload.usage);
-	const content = payload.choices?.[0]?.delta?.content;
+	const delta = payload.choices?.[0]?.delta;
+	const content = delta?.content;
 	if (content) callbacks.onDelta(content);
+	for (const chunk of delta?.tool_calls ?? []) appendToolCall(toolCalls, chunk);
+}
+
+function appendToolCall(toolCalls: OpenRouterToolCall[], chunk: ToolCallDelta): void {
+	const index = chunk.index ?? 0;
+	let call = toolCalls[index];
+	if (!call) {
+		call = { id: chunk.id || `tool-call-${index}`, type: 'function', function: { name: '', arguments: '' } };
+		toolCalls[index] = call;
+	}
+	if (chunk.id) call.id = chunk.id;
+	if (chunk.function?.name) call.function.name += chunk.function.name;
+	if (chunk.function?.arguments) call.function.arguments += chunk.function.arguments;
 }
 
 export async function streamExecutor(
@@ -62,10 +80,11 @@ export async function streamExecutor(
 	apiKey: string,
 	callbacks: StreamCallbacks,
 	signal: AbortSignal,
-): Promise<void> {
+	tools: ExecutorTool[] = [],
+): Promise<OpenRouterToolCall[]> {
 	let response: Response;
 	try {
-		response = await fetch(CHAT_COMPLETIONS_URL, { method: 'POST', headers: headers(apiKey), body: JSON.stringify({ model, messages: executorMessages(messages, skillContent, documentContext), stream: true }), signal });
+		response = await fetch(CHAT_COMPLETIONS_URL, { method: 'POST', headers: headers(apiKey), body: JSON.stringify({ model, messages: executorMessages(messages, skillContent, documentContext), stream: true, ...(tools.length ? { tools, tool_choice: 'auto' } : {}) }), signal });
 	} catch (error) {
 		if (error instanceof DOMException && error.name === 'AbortError') throw error;
 		throw new StreamingUnavailableError('Streaming is not available in this environment.');
@@ -79,13 +98,15 @@ export async function streamExecutor(
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	const parser = new SseParser();
+	const toolCalls: OpenRouterToolCall[] = [];
 	while (true) {
 		const { done, value } = await reader.read();
 		if (done) break;
-		for (const event of parser.push(decoder.decode(value, { stream: true }))) handleSseEvent(event, callbacks);
+		for (const event of parser.push(decoder.decode(value, { stream: true }))) handleSseEvent(event, callbacks, toolCalls);
 	}
-	for (const event of parser.push(decoder.decode())) handleSseEvent(event, callbacks);
-	for (const event of parser.finish()) handleSseEvent(event, callbacks);
+	for (const event of parser.push(decoder.decode())) handleSseEvent(event, callbacks, toolCalls);
+	for (const event of parser.finish()) handleSseEvent(event, callbacks, toolCalls);
+	return toolCalls;
 }
 
 export async function completeExecutor(
@@ -94,7 +115,9 @@ export async function completeExecutor(
 	skillContent: string | null,
 	documentContext: string | null,
 	apiKey: string,
-): Promise<{ content: string; usage?: Usage; model: string }> {
-	const response = await requestCompletion({ model, messages: executorMessages(messages, skillContent, documentContext), stream: false }, apiKey);
-	return { content: response.choices?.[0]?.message?.content || '', usage: response.usage, model: response.model || model };
+	tools: ExecutorTool[] = [],
+): Promise<CompletionResult> {
+	const response = await requestCompletion({ model, messages: executorMessages(messages, skillContent, documentContext), stream: false, ...(tools.length ? { tools, tool_choice: 'auto' } : {}) }, apiKey);
+	const message = response.choices?.[0]?.message;
+	return { content: message?.content || '', usage: response.usage, model: response.model || model, toolCalls: message?.tool_calls || [] };
 }

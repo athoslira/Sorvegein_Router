@@ -26,6 +26,15 @@ Docling is a Python project, so it is not bundled into this TypeScript/mobile pl
 
 The plugin supports the file formats accepted by the picker, imports at most 25 documents from a selected folder, limits individual uploads to 20 MB, and limits injected Markdown to protect context and cost. It does not save source files or converted output. For mobile devices, `localhost` means the phone/tablet itself; use a reachable HTTPS service or a local service on that device.
 
+## MCP tools
+
+Sovereign Router can call tools from remote MCP servers through Streamable HTTP. In **Settings → Sovereign Router → MCP connections**, add an endpoint, optional SecretStorage key, and enable it. On the chat panel, select **MCP** only for messages where those tools may be useful.
+
+- The plugin accepts HTTPS endpoints, plus `http://localhost` for a locally running server. It does not spawn programs or use the desktop-only stdio transport.
+- Tools marked read-only by their server can run during an MCP-enabled chat. Write tools are off by default; enabling them still presents the arguments and requires explicit confirmation for every call.
+- The plugin fetches the server's tool list only for an MCP-enabled message. MCP session details, tool results, and chat history remain only in the open panel.
+- [`mcp-connectors/`](mcp-connectors/README.md) contains a small generator for a standalone Streamable HTTP connector. Deploy it behind HTTPS before using it from a mobile device.
+
 ## Privacy and security
 
 - The plugin sends chat messages and selected skill content to OpenRouter when you submit a request.
@@ -33,6 +42,7 @@ The plugin supports the file formats accepted by the picker, imports at most 25 
 - API keys are selected through Obsidian SecretStorage. `data.json` stores only their references.
 - Conversations and document context remain only in the open chat panel. The plugin collects no telemetry, edits no notes, and executes no remote code.
 - Remote skills are fetched as Markdown only from GitHub repositories you explicitly allow. They are never executed or saved to the vault.
+- MCP servers receive only the arguments of a tool call that you enabled in the chat. Their tools can be selected by OpenRouter only after their schemas have been loaded for that request.
 
 ## Development
 

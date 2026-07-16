@@ -2,6 +2,8 @@ import * as assert from 'node:assert/strict';
 import { buildDocumentContext, limitDocumentContent, MAX_DOCUMENT_CHARS } from '../src/document-context';
 import { isSupportedDocument, isTextDocument, needsDoclingConversion } from '../src/document-files';
 import { DEFAULT_EXECUTOR_MODELS, modelLabel } from '../src/models';
+import { parseMcpToolCalls, toExecutorTools } from '../src/mcp-tools';
+import { canCallMcpTool, isAllowedMcpEndpoint } from '../src/mcp-policy';
 import { parseGatekeeperDecision, selectRoute } from '../src/routing';
 import { isAllowedGitHubRepository, isSafeRelativePath } from '../src/skill-policy';
 import { SseParser } from '../src/sse';
@@ -18,6 +20,7 @@ const settings: SovereignRouterSettings = {
 	allowedGitHubRepos: [],
 	doclingServiceUrl: '',
 	doclingSecretName: '',
+	mcpServers: [],
 };
 
 function run(name: string, check: () => void): void {
@@ -67,4 +70,24 @@ run('classifies vault files for local reading or Docling conversion', () => {
 	assert.equal(needsDoclingConversion('report.pdf'), true);
 	assert.equal(isSupportedDocument('slides.pptx'), true);
 	assert.equal(isSupportedDocument('archive.zip'), false);
+});
+
+run('restricts MCP endpoints and requires confirmation for enabled write tools', () => {
+	const server = { id: 'weather', name: 'Weather', url: 'https://mcp.example.com/mcp', secretName: '', enabled: true, allowWriteTools: true };
+	const readTool = { serverId: 'weather', serverName: 'Weather', name: 'forecast', description: '', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } };
+	const writeTool = { ...readTool, name: 'save_location', annotations: {} };
+	assert.equal(isAllowedMcpEndpoint('https://mcp.example.com/mcp'), true);
+	assert.equal(isAllowedMcpEndpoint('http://mcp.example.com/mcp'), false);
+	assert.equal(isAllowedMcpEndpoint('http://localhost:3000/mcp'), true);
+	assert.equal(canCallMcpTool(readTool, server).requiresConfirmation, false);
+	assert.equal(canCallMcpTool(writeTool, server).requiresConfirmation, true);
+	assert.equal(canCallMcpTool(writeTool, { ...server, allowWriteTools: false }).allowed, false);
+});
+
+run('maps only known MCP tools from model calls', () => {
+	const tool = { serverId: 'weather', serverName: 'Weather', name: 'forecast', description: 'Forecast', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } };
+	const executorTool = toExecutorTools([tool])[0];
+	assert.ok(executorTool);
+	const calls = parseMcpToolCalls([{ id: 'call-1', type: 'function', function: { name: executorTool.function.name, arguments: '{"city":"Sao Paulo"}' } }], [tool]);
+	assert.equal('error' in calls[0]!, false);
 });
