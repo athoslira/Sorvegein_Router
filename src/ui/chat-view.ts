@@ -46,6 +46,7 @@ interface ChatSession {
 	hermesClient: HermesClient | null;
 	hermesRunId: string | null;
 	isConvertingDocument: boolean;
+	attachmentsExpanded: boolean;
 }
 
 function formatError(error: unknown): string {
@@ -222,6 +223,7 @@ export class SovereignRouterView extends ItemView {
 			hermesClient: null,
 			hermesRunId: null,
 			isConvertingDocument: false,
+			attachmentsExpanded: false,
 		};
 		this.sessions.set(id, session);
 		this.sessionOrder.push(id);
@@ -347,13 +349,7 @@ export class SovereignRouterView extends ItemView {
 			return;
 		}
 
-		const maximumFiles = 25;
-		const availableSlots = Math.max(0, maximumFiles - session.documents.length);
-		if (availableSlots === 0) {
-			new Notice(`You can attach up to ${maximumFiles} documents to a chat session.`);
-			return;
-		}
-		const files = candidates.slice(0, availableSlots);
+		const files = candidates;
 		const secretName = this.plugin.settings.doclingSecretName;
 		const doclingKey = secretName ? this.app.secretStorage.getSecret(secretName) : null;
 		const canUseDocling = Boolean(this.plugin.settings.doclingServiceUrl) && (!secretName || Boolean(doclingKey));
@@ -361,7 +357,7 @@ export class SovereignRouterView extends ItemView {
 		session.isConvertingDocument = true;
 		this.refreshSessionUi(session, 'Reading...');
 		let attached = 0;
-		let skipped = candidates.length - files.length;
+		let skipped = 0;
 		try {
 			for (const file of files) {
 				try {
@@ -697,8 +693,22 @@ export class SovereignRouterView extends ItemView {
 	private renderAttachments(): void {
 		const session = this.activeSession;
 		this.attachmentsEl.empty();
+		if (session.documents.length === 0) return;
+		const summary = this.attachmentsEl.createDiv({ cls: 'sr-attachments-summary' });
+		summary.createSpan({ text: `${session.documents.length} document${session.documents.length === 1 ? '' : 's'} attached` });
+		const toggle = summary.createEl('button', {
+			text: session.attachmentsExpanded ? 'Hide files' : 'Show files',
+			cls: 'sr-attachments-toggle',
+		});
+		this.registerDomEvent(toggle, 'click', () => {
+			session.attachmentsExpanded = !session.attachmentsExpanded;
+			this.renderAttachments();
+		});
+		if (!session.attachmentsExpanded) return;
+
+		const list = this.attachmentsEl.createDiv({ cls: 'sr-attachment-list' });
 		for (const [index, document] of session.documents.entries()) {
-			const chip = this.attachmentsEl.createDiv({ cls: 'sr-attachment' });
+			const chip = list.createDiv({ cls: 'sr-attachment' });
 			chip.createSpan({ text: document.truncated ? `${document.name} (truncated)` : document.name });
 			const remove = chip.createEl('button', { text: 'Remove', cls: 'sr-attachment-remove' });
 			remove.disabled = !this.canInteract(session);

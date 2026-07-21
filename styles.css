@@ -22,8 +22,12 @@
 .sr-message-meta { min-height: 1.1em; }
 .sr-composer { display: flex; flex-direction: column; border-top: 1px solid var(--background-modifier-border); }
 .sr-file-input { display: none; }
-.sr-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.sr-attachment { display: flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 6px; border-radius: 6px; background: var(--background-secondary); font-size: var(--font-ui-smaller); overflow-wrap: anywhere; }
+.sr-attachments { margin-bottom: 8px; }
+.sr-attachments-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.sr-attachments-toggle { flex: 0 0 auto; }
+.sr-attachment-list { display: flex; flex-direction: column; gap: 6px; max-height: 160px; margin-top: 6px; overflow-y: auto; }
+.sr-attachment { display: flex; align-items: center; justify-content: space-between; gap: 6px; max-width: 100%; padding: 3px 6px; border-radius: 6px; background: var(--background-secondary); font-size: var(--font-ui-smaller); overflow-wrap: anywhere; }
+.sr-attachment span { flex: 1; min-width: 0; }
 .sr-attachment-remove { padding: 1px 5px; font-size: var(--font-ui-smaller); }
 .sr-input { order: 1; width: 100%; resize: vertical; box-sizing: border-box; }
 .sr-actions { display: grid; order: 2; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
