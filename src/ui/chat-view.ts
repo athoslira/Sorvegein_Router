@@ -1,7 +1,7 @@
 import { ItemView, MarkdownRenderer, Notice, TFile, TFolder, WorkspaceLeaf } from 'obsidian';
 import { buildDocumentContext, limitDocumentContent, type AttachedDocument } from '../document-context';
 import { isSupportedDocument, isTextDocument, needsDoclingConversion } from '../document-files';
-import { convertWithDocling, DoclingError } from '../docling';
+import { convertWithDocling } from '../docling';
 import { HermesClient, HermesError } from '../hermes';
 import { loadMcpCatalog, parseMcpToolCalls, toExecutorTools, type McpCatalog } from '../mcp-tools';
 import { canCallMcpTool } from '../mcp-policy';
@@ -47,6 +47,8 @@ interface ChatSession {
 	hermesRunId: string | null;
 	isConvertingDocument: boolean;
 	attachmentsExpanded: boolean;
+	pendingDocumentNames: string[];
+	attachmentError: string | null;
 }
 
 function formatError(error: unknown): string {
@@ -224,6 +226,8 @@ export class SovereignRouterView extends ItemView {
 			hermesRunId: null,
 			isConvertingDocument: false,
 			attachmentsExpanded: false,
+			pendingDocumentNames: [],
+			attachmentError: null,
 		};
 		this.sessions.set(id, session);
 		this.sessionOrder.push(id);
@@ -309,10 +313,14 @@ export class SovereignRouterView extends ItemView {
 			return;
 		}
 
+		const selectedFiles = Array.from(files);
 		session.isConvertingDocument = true;
+		session.pendingDocumentNames = selectedFiles.map((file) => file.name);
+		session.attachmentError = null;
+		if (this.isActive(session)) this.renderAttachments();
 		this.refreshSessionUi(session, 'Converting...');
 		try {
-			for (const file of Array.from(files)) {
+			for (const file of selectedFiles) {
 				try {
 					const markdown = await convertWithDocling(file, this.plugin.settings.doclingServiceUrl, apiKey);
 					const limited = limitDocumentContent(markdown);
@@ -325,11 +333,14 @@ export class SovereignRouterView extends ItemView {
 					}
 					new Notice(`${file.name} attached for this chat session.`);
 				} catch (error) {
-					const message = error instanceof DoclingError ? error.message : `Could not convert ${file.name}.`;
-					new Notice(message);
+					const message = error instanceof Error && error.message ? error.message : `Could not convert ${file.name}.`;
+					session.attachmentError = `Could not attach ${file.name}: ${message}`;
+					new Notice(session.attachmentError);
+				} finally {
+					session.pendingDocumentNames.shift();
+					if (this.isActive(session)) this.renderAttachments();
 				}
 			}
-			if (this.isActive(session)) this.renderAttachments();
 		} finally {
 			session.isConvertingDocument = false;
 			if (this.isActive(session)) {
@@ -694,7 +705,17 @@ export class SovereignRouterView extends ItemView {
 	private renderAttachments(): void {
 		const session = this.activeSession;
 		this.attachmentsEl.empty();
-		if (session.documents.length === 0) return;
+		if (session.documents.length === 0 && session.pendingDocumentNames.length === 0 && !session.attachmentError) return;
+		if (session.pendingDocumentNames.length > 0) {
+			this.attachmentsEl.createDiv({
+				text: `Converting: ${session.pendingDocumentNames.join(', ')}`,
+				cls: 'sr-attachments-pending',
+			});
+		}
+		if (session.documents.length === 0) {
+			if (session.attachmentError) this.attachmentsEl.createDiv({ text: session.attachmentError, cls: 'sr-attachments-error' });
+			return;
+		}
 		const summary = this.attachmentsEl.createDiv({ cls: 'sr-attachments-summary' });
 		const singleDocument = session.documents.length === 1 ? session.documents[0] : null;
 		summary.createSpan({
@@ -711,6 +732,7 @@ export class SovereignRouterView extends ItemView {
 			session.attachmentsExpanded = !session.attachmentsExpanded;
 			this.renderAttachments();
 		});
+		if (session.attachmentError) this.attachmentsEl.createDiv({ text: session.attachmentError, cls: 'sr-attachments-error' });
 		if (!session.attachmentsExpanded) return;
 
 		const list = this.attachmentsEl.createDiv({ cls: 'sr-attachment-list' });

@@ -3,10 +3,7 @@ import { requestUrl } from 'obsidian';
 const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
 
 interface DoclingResponse {
-	status?: string;
 	document?: { md_content?: string };
-	errors?: Array<{ message?: string }>;
-	detail?: string;
 }
 
 export class DoclingError extends Error {
@@ -38,6 +35,24 @@ function normalizedServiceUrl(value: string): string {
 	return url.toString().replace(/\/$/, '');
 }
 
+function responseMessage(value: unknown): string | null {
+	if (typeof value === 'string') return value.trim() || null;
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const message = responseMessage(item);
+			if (message) return message;
+		}
+		return null;
+	}
+	if (!value || typeof value !== 'object') return null;
+	const record = value as Record<string, unknown>;
+	for (const key of ['message', 'msg', 'detail', 'error', 'errors']) {
+		const message = responseMessage(record[key]);
+		if (message) return message;
+	}
+	return null;
+}
+
 export async function convertWithDocling(
 	file: File,
 	serviceUrl: string,
@@ -66,11 +81,11 @@ export async function convertWithDocling(
 	});
 	const body = response.json as DoclingResponse;
 	if (response.status < 200 || response.status >= 300) {
-		throw new DoclingError(body.detail || body.errors?.[0]?.message || `Docling request failed (${response.status}).`, response.status);
+		throw new DoclingError(responseMessage(body) || `Docling request failed (${response.status}).`, response.status);
 	}
 	const markdown = body.document?.md_content;
 	if (!markdown) {
-		throw new DoclingError(body.errors?.[0]?.message || 'Docling did not return Markdown for this document.');
+		throw new DoclingError(responseMessage(body) || 'Docling did not return Markdown for this document.');
 	}
 	return markdown;
 }
