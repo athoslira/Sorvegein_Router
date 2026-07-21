@@ -69,7 +69,11 @@ export async function convertWithDocling(
 			...(apiKey ? { 'X-Api-Key': apiKey } : {}),
 		},
 		body: JSON.stringify({
-			file_sources: [{ base64_string: toBase64(await file.arrayBuffer()), filename: file.name }],
+			sources: [{
+				kind: 'file',
+				base64_string: toBase64(await file.arrayBuffer()),
+				filename: file.name,
+			}],
 			options: {
 				to_formats: ['md'],
 				do_ocr: true,
