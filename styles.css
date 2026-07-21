@@ -24,6 +24,7 @@
 .sr-file-input { display: none; }
 .sr-attachments { margin-bottom: 8px; }
 .sr-attachments-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.sr-attachments-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-normal); }
 .sr-attachments-toggle { flex: 0 0 auto; }
 .sr-attachment-list { display: flex; flex-direction: column; gap: 6px; max-height: 160px; margin-top: 6px; overflow-y: auto; }
 .sr-attachment { display: flex; align-items: center; justify-content: space-between; gap: 6px; max-width: 100%; padding: 3px 6px; border-radius: 6px; background: var(--background-secondary); font-size: var(--font-ui-smaller); overflow-wrap: anywhere; }

@@ -6,7 +6,7 @@ export function isAllowedMcpEndpoint(value: string): boolean {
 		if (url.username || url.password || url.search || url.hash) return false;
 		if (url.protocol === 'https:') return true;
 		return url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
-	} catch (_error) {
+	} catch {
 		return false;
 	}
 }

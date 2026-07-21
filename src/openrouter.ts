@@ -44,13 +44,13 @@ export async function routeWithGatekeeper(question: string, settings: SovereignR
 	const response = await requestCompletion({ model: settings.gatekeeperModel, temperature: 0, messages: [{ role: 'system', content: routingSystemPrompt(settings) }, { role: 'user', content: question }] }, apiKey);
 	const content = response.choices?.[0]?.message?.content;
 	if (!content) return null;
-	try { return parseGatekeeperDecision(JSON.parse(content)); } catch (_error) { return null; }
+	try { return parseGatekeeperDecision(JSON.parse(content)); } catch { return null; }
 }
 
 function handleSseEvent(event: string, callbacks: StreamCallbacks, toolCalls: OpenRouterToolCall[]): void {
 	if (event === '[DONE]') return;
 	let payload: CompletionResponse;
-	try { payload = JSON.parse(event) as CompletionResponse; } catch (_error) { return; }
+	try { payload = JSON.parse(event) as CompletionResponse; } catch { return; }
 	if (payload.error?.message) throw new OpenRouterError(payload.error.message);
 	if (payload.model) callbacks.onModel(payload.model);
 	if (payload.usage) callbacks.onUsage(payload.usage);
@@ -91,7 +91,7 @@ export async function streamExecutor(
 	}
 	if (!response.ok) {
 		let body: CompletionResponse | undefined;
-		try { body = (await response.json()) as CompletionResponse; } catch (_error) { /* status remains useful */ }
+		try { body = (await response.json()) as CompletionResponse; } catch { /* status remains useful */ }
 		throw new OpenRouterError(errorMessage(response.status, body), response.status);
 	}
 	if (!response.body) throw new StreamingUnavailableError('Streaming response body is unavailable.');

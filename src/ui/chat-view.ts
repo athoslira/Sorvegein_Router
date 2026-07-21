@@ -317,9 +317,10 @@ export class SovereignRouterView extends ItemView {
 					const markdown = await convertWithDocling(file, this.plugin.settings.doclingServiceUrl, apiKey);
 					const limited = limitDocumentContent(markdown);
 					session.documents.push({ name: file.name, markdown: limited.content, truncated: limited.truncated });
+					session.attachmentsExpanded = true;
 					try {
 						await this.plugin.contextIndex.addExternalDocument(file.name, limited.content);
-					} catch (_error) {
+					} catch {
 						new Notice(`${file.name} is attached for this session, but could not be added to local context.`);
 					}
 					new Notice(`${file.name} attached for this chat session.`);
@@ -368,7 +369,7 @@ export class SovereignRouterView extends ItemView {
 					}
 					session.documents.push(document);
 					attached += 1;
-				} catch (_error) {
+				} catch {
 					skipped += 1;
 				}
 			}
@@ -459,7 +460,7 @@ export class SovereignRouterView extends ItemView {
 					const resolved = await this.plugin.contextIndex.resolve(route.context.query);
 					vaultContext = resolved.content;
 					if (resolved.note) this.setAssistantMeta(session, assistant, resolved.note);
-				} catch (_error) {
+				} catch {
 					this.setAssistantMeta(session, assistant, 'Local context is unavailable; continuing without it.');
 				}
 			}
@@ -554,7 +555,7 @@ export class SovereignRouterView extends ItemView {
 			try {
 				const resolved = await this.plugin.contextIndex.resolve(route.context.query);
 				if (resolved.content) sections.push(`Relevant vault context:\n\n${resolved.content}`);
-			} catch (_error) { /* Hermes can continue without vault context. */ }
+			} catch { /* Hermes can continue without vault context. */ }
 		}
 		return sections.join('\n\n');
 	}
@@ -576,7 +577,7 @@ export class SovereignRouterView extends ItemView {
 		} else {
 			try {
 				route = selectRoute(await routeWithGatekeeper(question, this.plugin.settings, apiKey), this.plugin.settings);
-			} catch (_error) {
+			} catch {
 				route = fallbackRoute(this.plugin.settings, 'Gatekeeper unavailable; using the default model for this session.');
 			}
 		}
@@ -683,7 +684,7 @@ export class SovereignRouterView extends ItemView {
 		if (client && runId) {
 			try {
 				await client.stopRun(runId);
-			} catch (_error) {
+			} catch {
 				// The AbortController below still stops the local stream if Hermes is unreachable.
 			}
 		}
@@ -695,7 +696,13 @@ export class SovereignRouterView extends ItemView {
 		this.attachmentsEl.empty();
 		if (session.documents.length === 0) return;
 		const summary = this.attachmentsEl.createDiv({ cls: 'sr-attachments-summary' });
-		summary.createSpan({ text: `${session.documents.length} document${session.documents.length === 1 ? '' : 's'} attached` });
+		const singleDocument = session.documents.length === 1 ? session.documents[0] : null;
+		summary.createSpan({
+			text: singleDocument
+				? `Attached: ${singleDocument.name}${singleDocument.truncated ? ' (truncated)' : ''}`
+				: `${session.documents.length} documents attached`,
+			cls: 'sr-attachments-status',
+		});
 		const toggle = summary.createEl('button', {
 			text: session.attachmentsExpanded ? 'Hide files' : 'Show files',
 			cls: 'sr-attachments-toggle',

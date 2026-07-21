@@ -53,7 +53,7 @@ export function parseMcpToolCalls(calls: OpenRouterToolCall[], tools: McpTool[])
 			const args = JSON.parse(call.function.arguments) as unknown;
 			if (!args || typeof args !== 'object' || Array.isArray(args)) return { error: `Invalid arguments for ${tool.name}.`, id: call.id };
 			return { callId: call.id, tool, arguments: args as Record<string, unknown> };
-		} catch (_error) {
+		} catch {
 			return { error: `Invalid arguments for ${tool.name}.`, id: call.id };
 		}
 	});

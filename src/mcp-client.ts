@@ -58,7 +58,7 @@ export class McpClient {
 				method: 'DELETE',
 				headers: { Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': PROTOCOL_VERSION, 'Mcp-Session-Id': this.sessionId },
 			});
-		} catch (_error) {
+		} catch {
 			// The remote server may already have expired the ephemeral session.
 		} finally {
 			this.sessionId = null;
@@ -101,7 +101,7 @@ export class McpClient {
 		let response: Response;
 		try {
 			response = await fetch(this.server.url, { method: 'POST', headers, body: JSON.stringify(payload), signal });
-		} catch (_error) {
+		} catch {
 			if (signal?.aborted) throw new DOMException('Request cancelled.', 'AbortError');
 			throw new McpError(`Could not reach ${this.server.name}.`);
 		}
@@ -141,5 +141,5 @@ async function readJsonRpcResponse(response: Response): Promise<JsonRpcResponse>
 }
 
 function parseEvent(event: string, latest: JsonRpcResponse | null): JsonRpcResponse | null {
-	try { return JSON.parse(event) as JsonRpcResponse; } catch (_error) { return latest; }
+	try { return JSON.parse(event) as JsonRpcResponse; } catch { return latest; }
 }

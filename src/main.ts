@@ -83,7 +83,7 @@ export default class SovereignRouterPlugin extends Plugin {
 		if (isCatalogFresh(this.settings.modelCatalog, this.settings.modelCatalogRefreshDays)) return;
 		try {
 			await this.refreshModelCatalog();
-		} catch (_error) {
+		} catch {
 			// A catalog refresh is opportunistic; chat remains usable offline or without a key.
 		}
 	}

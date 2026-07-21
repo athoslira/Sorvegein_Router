@@ -19,7 +19,7 @@ function allowedHermesUrl(value: string): boolean {
 		if (url.username || url.password || url.search || url.hash) return false;
 		if (url.protocol === 'https:') return true;
 		return url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
-	} catch (_error) {
+	} catch {
 		return false;
 	}
 }
@@ -60,7 +60,7 @@ async function errorFromResponse(response: Response): Promise<HermesError> {
 		const error = asRecord(body?.error);
 		if (typeof error?.message === 'string') message = error.message;
 		else if (typeof body?.message === 'string') message = body.message;
-	} catch (_error) { /* HTTP status remains actionable. */ }
+	} catch { /* HTTP status remains actionable. */ }
 	return new HermesError(message, response.status);
 }
 
@@ -103,7 +103,7 @@ export class HermesClient {
 				if (status) callbacks.onStatus(status);
 				const text = textFromEvent(payload);
 				if (text) callbacks.onDelta(text);
-			} catch (_error) {
+			} catch {
 				// Hermes may send harmless non-JSON keepalives; they do not affect the run.
 			}
 		};

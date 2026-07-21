@@ -151,7 +151,7 @@ export class VaultContextIndex {
 				size: file.stat.size,
 			};
 			if (persist) this.scheduleSave();
-		} catch (_error) {
+		} catch {
 			// A file may disappear between a vault event and the indexed read.
 		}
 	}
@@ -161,7 +161,7 @@ export class VaultContextIndex {
 			if (entry.source === 'external') return entry.cachePath && await this.app.vault.adapter.exists(entry.cachePath) ? this.app.vault.adapter.read(entry.cachePath) : null;
 			const file = this.app.vault.getFileByPath(entry.path);
 			return file ? this.app.vault.cachedRead(file) : null;
-		} catch (_error) {
+		} catch {
 			return null;
 		}
 	}
@@ -178,7 +178,7 @@ export class VaultContextIndex {
 					if (!await this.app.vault.adapter.exists(this.registryPath)) return;
 					const parsed = JSON.parse(await this.app.vault.adapter.read(this.registryPath)) as Partial<ContextRegistry>;
 					if (parsed.version === REGISTRY_VERSION && parsed.entries && typeof parsed.entries === 'object') this.registry = { version: REGISTRY_VERSION, entries: parsed.entries };
-				} catch (_error) {
+				} catch {
 					this.registry = { version: REGISTRY_VERSION, entries: {} };
 				} finally {
 					this.loaded = true;
